@@ -41,6 +41,22 @@ export async function startServer(
     res.sendStatus(204);
   });
 
+  const proxyKey = process.env.PROXY_API_KEY || process.env.CURSOR_API_KEY;
+  if (proxyKey) {
+    app.use((req, res, next) => {
+      if (req.path === "/health" || req.method === "OPTIONS") return next();
+      const auth = req.headers.authorization;
+      const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+      if (token !== proxyKey) {
+        res.status(401).json({
+          error: { message: "Invalid API key", type: "auth_error", code: "invalid_api_key" },
+        });
+        return;
+      }
+      next();
+    });
+  }
+
   app.get("/health", handleHealth);
   app.get("/v1/models", handleModels);
   app.post("/v1/chat/completions", handleChatCompletions);

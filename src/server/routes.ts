@@ -43,17 +43,6 @@ const KNOWN_MODELS = [
   "grok",
 ];
 
-function extractApiKey(req: Request): string | undefined {
-  const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ")) {
-    const token = auth.slice(7).trim();
-    if (token && token !== "not-needed" && token !== "no-key" && token !== "null") {
-      return token;
-    }
-  }
-  return undefined;
-}
-
 export async function handleChatCompletions(
   req: Request,
   res: Response
@@ -79,7 +68,6 @@ export async function handleChatCompletions(
     }
 
     const { prompt, model } = openaiToCli(body);
-    const apiKey = extractApiKey(req);
     console.error(
       `[chat] id=${requestId} model=${body.model} -> cli_model=${model} stream=${stream}`
     );
@@ -87,9 +75,9 @@ export async function handleChatCompletions(
     const subprocess = new CursorSubprocess();
 
     if (stream) {
-      await handleStreamingResponse(res, subprocess, prompt, model, requestId, apiKey);
+      await handleStreamingResponse(res, subprocess, prompt, model, requestId);
     } else {
-      await handleNonStreamingResponse(res, subprocess, prompt, model, requestId, apiKey);
+      await handleNonStreamingResponse(res, subprocess, prompt, model, requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -107,8 +95,7 @@ async function handleStreamingResponse(
   subprocess: CursorSubprocess,
   prompt: string,
   model: string,
-  requestId: string,
-  apiKey?: string
+  requestId: string
 ): Promise<void> {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -180,7 +167,7 @@ async function handleStreamingResponse(
       resolve();
     });
 
-    subprocess.start(prompt, { model, apiKey }).catch((err) => {
+    subprocess.start(prompt, { model }).catch((err) => {
       console.error("[stream] Start error:", err);
       if (!res.writableEnded) {
         res.write(
@@ -204,8 +191,7 @@ async function handleNonStreamingResponse(
   subprocess: CursorSubprocess,
   prompt: string,
   model: string,
-  requestId: string,
-  apiKey?: string
+  requestId: string
 ): Promise<void> {
   return new Promise<void>((resolve) => {
     let finalResult: ResultEvent | null = null;
@@ -244,7 +230,7 @@ async function handleNonStreamingResponse(
       resolve();
     });
 
-    subprocess.start(prompt, { model, apiKey }).catch((error) => {
+    subprocess.start(prompt, { model }).catch((error) => {
       if (!res.headersSent) {
         res.status(500).json({
           error: {

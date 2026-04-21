@@ -122,7 +122,8 @@ Full list: `curl http://localhost:4646/v1/models` or `agent --list-models`.
 | Env Variable | Default | Description |
 |--------------|---------|-------------|
 | `PORT` | `4646` | Listen port (or `cursor-agent-api start 8080`) |
-| `CURSOR_API_KEY` | - | Alternative to `agent login` |
+| `PROXY_API_KEY` | - | Protect the proxy with an API key (clients must send `Authorization: Bearer <key>`) |
+| `CURSOR_API_KEY` | - | Alternative to `agent login` for Cursor CLI auth |
 
 ## Deploy on VPS (Docker)
 
@@ -137,12 +138,12 @@ cd cursor-agent-api-proxy
 
 ```bash
 cat > .env << 'EOF'
-CURSOR_API_KEY=sk-your-cursor-api-key
-PORT=4646
+PROXY_API_KEY=sk-your-secret-key
 EOF
 ```
 
-> Get your API key at [cursor.com/settings](https://cursor.com/settings).
+> `PROXY_API_KEY` protects the proxy — clients must send `Authorization: Bearer <key>`.
+> Cursor CLI auth uses `agent login` (run inside the container after first start).
 
 **3. Build and run:**
 
@@ -162,7 +163,7 @@ curl http://localhost:4646/health
 ```bash
 curl -X POST http://your-vps-ip:4646/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-cursor-api-key" \
+  -H "Authorization: Bearer sk-your-secret-key" \
   -d '{"model":"auto","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
