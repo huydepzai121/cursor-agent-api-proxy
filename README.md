@@ -124,6 +124,50 @@ Full list: `curl http://localhost:4646/v1/models` or `agent --list-models`.
 | `PORT` | `4646` | Listen port (or `cursor-agent-api start 8080`) |
 | `CURSOR_API_KEY` | - | Alternative to `agent login` |
 
+## Deploy on VPS (Docker)
+
+**1. Clone and configure:**
+
+```bash
+git clone https://github.com/huydepzai121/cursor-agent-api-proxy.git
+cd cursor-agent-api-proxy
+```
+
+**2. Create `.env`:**
+
+```bash
+cat > .env << 'EOF'
+CURSOR_API_KEY=sk-your-cursor-api-key
+PORT=4646
+EOF
+```
+
+> Get your API key at [cursor.com/settings](https://cursor.com/settings).
+
+**3. Build and run:**
+
+```bash
+docker compose up -d --build
+docker compose logs -f        # check logs
+```
+
+**4. Verify:**
+
+```bash
+curl http://localhost:4646/health
+```
+
+**5. Use from any client:**
+
+```bash
+curl -X POST http://your-vps-ip:4646/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-cursor-api-key" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+> **Tip:** Put behind nginx/caddy with HTTPS for production use.
+
 ## Auto-start (boot)
 
 To start the proxy automatically on system boot:
