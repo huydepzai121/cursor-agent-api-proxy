@@ -1,0 +1,12 @@
+services:
+  cursor-agent-api:
+    build: .
+    ports:
+      - "${PORT:-4646}:4646"
+    environment:
+      - PORT=4646
+      - CURSOR_DEBUG=${CURSOR_DEBUG:-}
+    volumes:
+      # Mount Cursor CLI credentials from host
+      - ${HOME}/.cursor-cli:/root/.cursor-cli:ro
+    restart: unless-stopped
