@@ -99,12 +99,18 @@ Already have OpenClaw running? Edit the config file directly:
 Model IDs match `agent --list-models` output directly:
 
 ```bash
-auto                  # auto-select
-gpt-5.2               # GPT-5.2
-gpt-5.3-codex         # GPT-5.3 Codex
-opus-4.6-thinking     # Claude Opus 4.6 (thinking)
-sonnet-4.5-thinking   # Claude Sonnet 4.5 (thinking)
-gemini-3-pro          # Gemini 3 Pro
+auto                          # auto-select
+composer-2-fast               # Composer 2 Fast (default)
+composer-2                    # Composer 2
+claude-opus-4-7-high          # Claude Opus 4.7 1M
+claude-opus-4-7-thinking-high # Claude Opus 4.7 1M Thinking
+claude-4.6-opus-high          # Claude Opus 4.6 1M
+claude-4.6-sonnet-medium      # Claude Sonnet 4.6 1M
+gpt-5.4-medium                # GPT-5.4 1M
+gpt-5.3-codex                 # Codex 5.3
+gpt-5.2                       # GPT-5.2
+gemini-3.1-pro                # Gemini 3.1 Pro
+grok-4-20                     # Grok 4.20
 ```
 
 Full list: `curl http://localhost:4646/v1/models` or `agent --list-models`.
