@@ -20,7 +20,7 @@ import {
 } from "./checksum.js";
 
 const CURSOR_API_BASE = "https://api2.cursor.sh";
-const DEFAULT_CLIENT_VERSION = "0.50.5";
+const DEFAULT_CLIENT_VERSION = "2.6.21";
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
 
