@@ -5,74 +5,35 @@
 
 import type { OpenAIChatMessage, OpenAIChatRequest, OpenAIContentPart } from "../types/openai.js";
 
-const KNOWN_CURSOR_MODELS = new Set([
-  "auto",
-  "composer-1.5",
-  "composer-1",
-  "gpt-5.3-codex",
-  "gpt-5.3-codex-low",
-  "gpt-5.3-codex-high",
-  "gpt-5.3-codex-xhigh",
-  "gpt-5.3-codex-fast",
-  "gpt-5.3-codex-low-fast",
-  "gpt-5.3-codex-high-fast",
-  "gpt-5.3-codex-xhigh-fast",
-  "gpt-5.2",
-  "gpt-5.2-codex",
-  "gpt-5.2-codex-high",
-  "gpt-5.2-codex-low",
-  "gpt-5.2-codex-xhigh",
-  "gpt-5.2-codex-fast",
-  "gpt-5.2-codex-high-fast",
-  "gpt-5.2-codex-low-fast",
-  "gpt-5.2-codex-xhigh-fast",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex-max-high",
-  "opus-4.6-thinking",
-  "sonnet-4.5-thinking",
-  "gpt-5.2-high",
-  "opus-4.6",
-  "opus-4.5",
-  "opus-4.5-thinking",
-  "sonnet-4.5",
-  "gpt-5.1-high",
-  "gemini-3-pro",
-  "gemini-3-flash",
-  "grok",
-]);
-
 export interface CliInput {
   prompt: string;
   model: string;
 }
 
 /**
- * Resolve the Cursor CLI model name from an OpenAI-style model string.
+ * Resolve model name for Cursor API.
  *
- * Supported formats:
- *   "cursor/opus-4.6"     -> "opus-4.6"
- *   "cursor-opus-4.6"     -> "opus-4.6"
- *   "auto"                -> "auto"
- *   "opus-4.6-thinking"   -> "opus-4.6-thinking"
+ * Pass-through all model names directly to Cursor API.
+ * Never return "auto" — Cursor API rejects it.
  */
 export function extractModel(model: string): string {
-  if (model.startsWith("cursor/")) {
-    return model.slice("cursor/".length) || "auto";
+  const raw = (model || "").trim();
+
+  // Strip cursor/ or cursor- prefix
+  if (raw.startsWith("cursor/")) {
+    const remainder = raw.slice("cursor/".length);
+    return remainder || "default";
+  }
+  if (raw.startsWith("cursor-")) {
+    const remainder = raw.slice("cursor-".length);
+    return remainder || "default";
   }
 
-  if (model.startsWith("cursor-")) {
-    const remainder = model.slice("cursor-".length);
-    if (remainder && KNOWN_CURSOR_MODELS.has(remainder)) {
-      return remainder;
-    }
-    if (remainder) return remainder;
-  }
+  // Never send "auto" to Cursor API
+  if (!raw || raw === "auto") return "default";
 
-  if (KNOWN_CURSOR_MODELS.has(model)) {
-    return model;
-  }
-
-  return "auto";
+  // Pass-through everything else directly
+  return raw;
 }
 
 function messageContentToText(content: string | OpenAIContentPart[]): string {
@@ -123,6 +84,6 @@ export function messagesToPrompt(messages: OpenAIChatMessage[]): string {
 export function openaiToCli(request: OpenAIChatRequest): CliInput {
   return {
     prompt: messagesToPrompt(request.messages),
-    model: extractModel(request.model || "auto"),
+    model: extractModel(request.model || "default"),
   };
 }

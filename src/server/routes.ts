@@ -165,7 +165,7 @@ export async function handleChatCompletions(
       return;
     }
 
-    const model = extractModel(body.model || "auto");
+    const model = extractModel(body.model || "default");
     console.error(`[chat] id=${requestId} model=${body.model} -> ${model} stream=${stream}`);
 
     const client = getClient();
@@ -265,7 +265,7 @@ export async function handleMessages(
       return;
     }
 
-    const model = extractModel(body.model || "auto");
+    const model = extractModel(body.model || "default");
     console.error(`[messages] id=${requestId} model=${body.model} -> ${model} stream=${stream}`);
 
     const client = getClient();

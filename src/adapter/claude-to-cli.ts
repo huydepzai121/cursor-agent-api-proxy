@@ -35,7 +35,7 @@ export function claudeToCli(request: ClaudeMessagesRequest): CliInput {
   if (!systemText && nonEmpty.length === 1 && nonEmpty[0].role === "user") {
     return {
       prompt: contentToText(nonEmpty[0].content),
-      model: extractModel(request.model || "auto"),
+      model: extractModel(request.model || "default"),
     };
   }
 
@@ -56,6 +56,6 @@ export function claudeToCli(request: ClaudeMessagesRequest): CliInput {
 
   return {
     prompt: parts.join("\n\n"),
-    model: extractModel(request.model || "auto"),
+    model: extractModel(request.model || "default"),
   };
 }
