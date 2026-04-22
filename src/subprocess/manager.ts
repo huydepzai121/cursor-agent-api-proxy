@@ -26,6 +26,7 @@ export interface SubprocessOptions {
   model: string;
   apiKey?: string;
   cwd?: string;
+  workspace?: string;  // project directory for cursor-agent --workspace
   timeout?: number;
 }
 
@@ -126,6 +127,12 @@ export class CursorSubprocess extends EventEmitter {
       "--stream-partial-output",
       "--yolo",
     ];
+
+    // Add workspace flag if provided (critical for project context)
+    const workspace = options.workspace || process.env.CURSOR_WORKSPACE;
+    if (workspace) {
+      args.push("--workspace", workspace);
+    }
 
     if (options.model && options.model !== "auto") {
       args.push("--model", options.model);

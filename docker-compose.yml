@@ -6,6 +6,7 @@ services:
     environment:
       - PORT=4646
       - PROXY_API_KEY=${PROXY_API_KEY:-}
+      - CURSOR_WORKSPACE=${CURSOR_WORKSPACE:-}
       - CURSOR_DEBUG=${CURSOR_DEBUG:-}
     volumes:
       # Mount Cursor CLI credentials from host

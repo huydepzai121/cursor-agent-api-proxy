@@ -146,6 +146,7 @@ export async function handleChatCompletions(
     }
 
     const { prompt, model } = openaiToCli(body);
+    const workspace = (body as any).workspace || undefined;
     console.error(
       `[chat] id=${requestId} model=${body.model} -> cli_model=${model} stream=${stream}`
     );
@@ -153,9 +154,9 @@ export async function handleChatCompletions(
     const subprocess = new CursorSubprocess();
 
     if (stream) {
-      await handleStreamingResponse(res, subprocess, prompt, model, requestId);
+      await handleStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
     } else {
-      await handleNonStreamingResponse(res, subprocess, prompt, model, requestId);
+      await handleNonStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -173,6 +174,7 @@ async function handleStreamingResponse(
   subprocess: CursorSubprocess,
   prompt: string,
   model: string,
+  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
   res.setHeader("Content-Type", "text/event-stream");
@@ -245,7 +247,7 @@ async function handleStreamingResponse(
       resolve();
     });
 
-    subprocess.start(prompt, { model }).catch((err) => {
+    subprocess.start(prompt, { model, workspace }).catch((err) => {
       console.error("[stream] Start error:", err);
       if (!res.writableEnded) {
         res.write(
@@ -269,6 +271,7 @@ async function handleNonStreamingResponse(
   subprocess: CursorSubprocess,
   prompt: string,
   model: string,
+  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -308,7 +311,7 @@ async function handleNonStreamingResponse(
       resolve();
     });
 
-    subprocess.start(prompt, { model }).catch((error) => {
+    subprocess.start(prompt, { model, workspace }).catch((error) => {
       if (!res.headersSent) {
         res.status(500).json({
           error: {
@@ -348,6 +351,7 @@ export async function handleMessages(
     }
 
     const { prompt, model } = claudeToCli(body);
+    const workspace = (body as any).workspace || (body as any).metadata?.workspace || undefined;
     console.error(
       `[messages] id=${requestId} model=${body.model} -> cli_model=${model} stream=${stream}`
     );
@@ -355,9 +359,9 @@ export async function handleMessages(
     const subprocess = new CursorSubprocess();
 
     if (stream) {
-      await handleClaudeStreamingResponse(res, subprocess, prompt, model, requestId);
+      await handleClaudeStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
     } else {
-      await handleClaudeNonStreamingResponse(res, subprocess, prompt, model, requestId);
+      await handleClaudeNonStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -376,6 +380,7 @@ async function handleClaudeStreamingResponse(
   subprocess: CursorSubprocess,
   prompt: string,
   model: string,
+  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
   res.setHeader("Content-Type", "text/event-stream");
@@ -445,7 +450,7 @@ async function handleClaudeStreamingResponse(
       resolve();
     });
 
-    subprocess.start(prompt, { model }).catch((err) => {
+    subprocess.start(prompt, { model, workspace }).catch((err) => {
       console.error("[claude-stream] Start error:", err);
       if (!res.writableEnded) {
         sendEvent("error", {
@@ -464,6 +469,7 @@ async function handleClaudeNonStreamingResponse(
   subprocess: CursorSubprocess,
   prompt: string,
   model: string,
+  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -504,7 +510,7 @@ async function handleClaudeNonStreamingResponse(
       resolve();
     });
 
-    subprocess.start(prompt, { model }).catch((error) => {
+    subprocess.start(prompt, { model, workspace }).catch((error) => {
       if (!res.headersSent) {
         res.status(500).json({
           type: "error",
