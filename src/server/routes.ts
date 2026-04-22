@@ -1,19 +1,21 @@
 /**
- * API route handlers — OpenAI-compatible endpoints backed by Cursor CLI.
+ * API route handlers — OpenAI-compatible endpoints backed by Cursor HTTP API.
+ *
+ * Instead of spawning a local CLI subprocess, requests are forwarded
+ * directly to api2.cursor.sh via HTTP. This allows the proxy to work
+ * from any machine, not just the one with Cursor CLI installed.
  */
 
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
-import { CursorSubprocess } from "../subprocess/manager.js";
-import type { ContentDeltaEvent, ResultEvent } from "../subprocess/manager.js";
-import { openaiToCli } from "../adapter/openai-to-cli.js";
+import { CursorApiClient, type ChatStreamEvent } from "../upstream/cursor-client.js";
+import { openaiToCli, extractModel } from "../adapter/openai-to-cli.js";
 import {
   createStreamChunk,
   createDoneChunk,
   createChatResponse,
 } from "../adapter/cli-to-openai.js";
 import type { OpenAIChatRequest } from "../types/openai.js";
-import { claudeToCli } from "../adapter/claude-to-cli.js";
 import {
   createClaudeResponse,
   createClaudeStreamMessageStart,
@@ -121,6 +123,22 @@ const KNOWN_MODELS = [
   "kimi-k2.5",
 ];
 
+// Shared client instance — initialized by initCursorClient()
+let cursorClient: CursorApiClient | null = null;
+
+export function initCursorClient(client: CursorApiClient): void {
+  cursorClient = client;
+}
+
+function getClient(): CursorApiClient {
+  if (!cursorClient) {
+    throw new Error("CursorApiClient not initialized. Set CURSOR_API_KEY.");
+  }
+  return cursorClient;
+}
+
+// ─── OpenAI-compatible endpoints ───
+
 export async function handleChatCompletions(
   req: Request,
   res: Response
@@ -130,11 +148,7 @@ export async function handleChatCompletions(
   const stream = body.stream === true;
 
   try {
-    if (
-      !body.messages ||
-      !Array.isArray(body.messages) ||
-      body.messages.length === 0
-    ) {
+    if (!body.messages?.length) {
       res.status(400).json({
         error: {
           message: "messages is required and must be a non-empty array",
@@ -145,36 +159,38 @@ export async function handleChatCompletions(
       return;
     }
 
-    const { prompt, model } = openaiToCli(body);
-    const workspace = (body as any).workspace || undefined;
-    console.error(
-      `[chat] id=${requestId} model=${body.model} -> cli_model=${model} stream=${stream}`
-    );
+    const model = extractModel(body.model || "auto");
+    console.error(`[chat] id=${requestId} model=${body.model} -> ${model} stream=${stream}`);
 
-    const subprocess = new CursorSubprocess();
+    const client = getClient();
+    const chatMessages = body.messages.map((m) => ({
+      role: m.role as "system" | "user" | "assistant",
+      content: typeof m.content === "string"
+        ? m.content
+        : m.content.filter((p) => p.type === "text").map((p) => p.text ?? "").join(""),
+    }));
 
     if (stream) {
-      await handleStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
+      await handleStreamingResponse(res, client, chatMessages, model, requestId);
     } else {
-      await handleNonStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
+      await handleNonStreamingResponse(res, client, chatMessages, model, requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[chat] Error:", message);
     if (!res.headersSent) {
-      res
-        .status(500)
-        .json({ error: { message, type: "server_error", code: null } });
+      res.status(500).json({ error: { message, type: "server_error", code: null } });
     }
   }
 }
 
+type SimpleMessage = { role: "system" | "user" | "assistant"; content: string };
+
 async function handleStreamingResponse(
   res: Response,
-  subprocess: CursorSubprocess,
-  prompt: string,
+  client: CursorApiClient,
+  messages: SimpleMessage[],
   model: string,
-  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
   res.setHeader("Content-Type", "text/event-stream");
@@ -182,149 +198,49 @@ async function handleStreamingResponse(
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Request-Id", requestId);
   res.flushHeaders();
-
   res.write(":ok\n\n");
 
-  return new Promise<void>((resolve) => {
-    let isFirst = true;
-    let lastModel = model;
-    let isComplete = false;
+  let isFirst = true;
 
-    res.on("close", () => {
-      if (!isComplete) subprocess.kill();
-      resolve();
-    });
+  for await (const event of client.chatStream({ messages, model, stream: true })) {
+    if (res.writableEnded) break;
 
-    subprocess.on("content_delta", (delta: ContentDeltaEvent) => {
-      if (delta.text && !res.writableEnded) {
-        const chunk = createStreamChunk(requestId, lastModel, delta.text, isFirst);
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        isFirst = false;
-      }
-    });
+    if (event.type === "content_delta" && event.text) {
+      const chunk = createStreamChunk(requestId, model, event.text, isFirst);
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      isFirst = false;
+    } else if (event.type === "done") {
+      const done = createDoneChunk(requestId, model);
+      res.write(`data: ${JSON.stringify(done)}\n\n`);
+      res.write("data: [DONE]\n\n");
+    } else if (event.type === "error") {
+      res.write(`data: ${JSON.stringify({
+        error: { message: event.error, type: "server_error", code: null },
+      })}\n\n`);
+      res.write("data: [DONE]\n\n");
+    }
+  }
 
-    subprocess.on("result", (result: ResultEvent) => {
-      isComplete = true;
-      if (result.model) lastModel = result.model;
-      if (!res.writableEnded) {
-        const done = createDoneChunk(requestId, lastModel);
-        res.write(`data: ${JSON.stringify(done)}\n\n`);
-        res.write("data: [DONE]\n\n");
-        res.end();
-      }
-      resolve();
-    });
-
-    subprocess.on("error", (error: Error) => {
-      console.error("[stream] Error:", error.message);
-      if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({
-            error: { message: error.message, type: "server_error", code: null },
-          })}\n\n`
-        );
-        res.end();
-      }
-      resolve();
-    });
-
-    subprocess.on("close", (code: number | null) => {
-      if (!res.writableEnded) {
-        if (code !== 0 && !isComplete) {
-          res.write(
-            `data: ${JSON.stringify({
-              error: {
-                message: `Process exited with code ${code}`,
-                type: "server_error",
-                code: null,
-              },
-            })}\n\n`
-          );
-        }
-        res.write("data: [DONE]\n\n");
-        res.end();
-      }
-      resolve();
-    });
-
-    subprocess.start(prompt, { model, workspace }).catch((err) => {
-      console.error("[stream] Start error:", err);
-      if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({
-            error: {
-              message: err instanceof Error ? err.message : String(err),
-              type: "server_error",
-              code: null,
-            },
-          })}\n\n`
-        );
-        res.end();
-      }
-      resolve();
-    });
-  });
+  if (!res.writableEnded) res.end();
 }
 
 async function handleNonStreamingResponse(
   res: Response,
-  subprocess: CursorSubprocess,
-  prompt: string,
+  client: CursorApiClient,
+  messages: SimpleMessage[],
   model: string,
-  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let finalResult: ResultEvent | null = null;
-
-    subprocess.on("result", (result: ResultEvent) => {
-      finalResult = result;
-    });
-
-    subprocess.on("error", (error: Error) => {
-      console.error("[non-stream] Error:", error.message);
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: { message: error.message, type: "server_error", code: null },
-        });
-      }
-      resolve();
-    });
-
-    subprocess.on("close", () => {
-      if (finalResult) {
-        const response = createChatResponse(
-          requestId,
-          finalResult.model || model,
-          finalResult.text
-        );
-        res.json(response);
-      } else if (!res.headersSent) {
-        res.status(500).json({
-          error: {
-            message: "CLI exited without producing a result",
-            type: "server_error",
-            code: null,
-          },
-        });
-      }
-      resolve();
-    });
-
-    subprocess.start(prompt, { model, workspace }).catch((error) => {
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: {
-            message: error instanceof Error ? error.message : String(error),
-            type: "server_error",
-            code: null,
-          },
-        });
-      }
-      resolve();
-    });
-  });
+  try {
+    const result = await client.chat({ messages, model });
+    res.json(createChatResponse(requestId, result.model, result.text));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: { message, type: "server_error", code: null } });
+  }
 }
+
+// ─── Claude Messages API endpoint ───
 
 export async function handleMessages(
   req: Request,
@@ -335,52 +251,53 @@ export async function handleMessages(
   const stream = body.stream === true;
 
   try {
-    if (
-      !body.messages ||
-      !Array.isArray(body.messages) ||
-      body.messages.length === 0
-    ) {
+    if (!body.messages?.length) {
       res.status(400).json({
         type: "error",
-        error: {
-          type: "invalid_request_error",
-          message: "messages is required and must be a non-empty array",
-        },
+        error: { type: "invalid_request_error", message: "messages is required and must be a non-empty array" },
       });
       return;
     }
 
-    const { prompt, model } = claudeToCli(body);
-    const workspace = (body as any).workspace || (body as any).metadata?.workspace || undefined;
-    console.error(
-      `[messages] id=${requestId} model=${body.model} -> cli_model=${model} stream=${stream}`
-    );
+    const model = extractModel(body.model || "auto");
+    console.error(`[messages] id=${requestId} model=${body.model} -> ${model} stream=${stream}`);
 
-    const subprocess = new CursorSubprocess();
+    const client = getClient();
+
+    // Convert Claude messages to simple format
+    const chatMessages: SimpleMessage[] = [];
+    if (body.system) {
+      const sysText = typeof body.system === "string"
+        ? body.system
+        : body.system.filter((b) => b.type === "text").map((b) => b.text).join("");
+      if (sysText) chatMessages.push({ role: "system", content: sysText });
+    }
+    for (const msg of body.messages) {
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : msg.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+      if (text) chatMessages.push({ role: msg.role, content: text });
+    }
 
     if (stream) {
-      await handleClaudeStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
+      await handleClaudeStreamingResponse(res, client, chatMessages, model, requestId);
     } else {
-      await handleClaudeNonStreamingResponse(res, subprocess, prompt, model, workspace, requestId);
+      await handleClaudeNonStreamingResponse(res, client, chatMessages, model, requestId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[messages] Error:", message);
     if (!res.headersSent) {
-      res.status(500).json({
-        type: "error",
-        error: { type: "server_error", message },
-      });
+      res.status(500).json({ type: "error", error: { type: "server_error", message } });
     }
   }
 }
 
 async function handleClaudeStreamingResponse(
   res: Response,
-  subprocess: CursorSubprocess,
-  prompt: string,
+  client: CursorApiClient,
+  messages: SimpleMessage[],
   model: string,
-  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
   res.setHeader("Content-Type", "text/event-stream");
@@ -397,137 +314,54 @@ async function handleClaudeStreamingResponse(
   sendEvent("content_block_start", createClaudeStreamContentBlockStart());
   res.write("event: ping\ndata: {}\n\n");
 
-  return new Promise<void>((resolve) => {
-    let isComplete = false;
-    let outputTokens = 0;
+  let hasContent = false;
 
-    res.on("close", () => {
-      if (!isComplete) subprocess.kill();
-      resolve();
-    });
+  for await (const event of client.chatStream({ messages, model, stream: true })) {
+    if (res.writableEnded) break;
 
-    subprocess.on("content_delta", (delta: ContentDeltaEvent) => {
-      if (delta.text && !res.writableEnded) {
-        sendEvent("content_block_delta", createClaudeStreamContentBlockDelta(delta.text));
-      }
-    });
-
-    subprocess.on("result", (result: ResultEvent) => {
-      isComplete = true;
-      if (!res.writableEnded) {
+    if (event.type === "content_delta" && event.text) {
+      sendEvent("content_block_delta", createClaudeStreamContentBlockDelta(event.text));
+      hasContent = true;
+    } else if (event.type === "done") {
+      sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
+      sendEvent("message_delta", createClaudeStreamMessageDelta(0));
+      sendEvent("message_stop", createClaudeStreamMessageStop());
+    } else if (event.type === "error") {
+      sendEvent("error", { type: "server_error", message: event.error });
+      if (!hasContent) {
         sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
-        sendEvent("message_delta", createClaudeStreamMessageDelta(outputTokens));
+        sendEvent("message_delta", createClaudeStreamMessageDelta(0));
         sendEvent("message_stop", createClaudeStreamMessageStop());
-        res.end();
       }
-      resolve();
-    });
+    }
+  }
 
-    subprocess.on("error", (error: Error) => {
-      console.error("[claude-stream] Error:", error.message);
-      if (!res.writableEnded) {
-        sendEvent("error", { type: "server_error", message: error.message });
-        res.end();
-      }
-      resolve();
-    });
-
-    subprocess.on("close", (code: number | null) => {
-      if (!res.writableEnded) {
-        if (code !== 0 && !isComplete) {
-          sendEvent("error", {
-            type: "server_error",
-            message: `Process exited with code ${code}`,
-          });
-        }
-        if (!isComplete) {
-          sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
-          sendEvent("message_delta", createClaudeStreamMessageDelta(outputTokens));
-          sendEvent("message_stop", createClaudeStreamMessageStop());
-        }
-        res.end();
-      }
-      resolve();
-    });
-
-    subprocess.start(prompt, { model, workspace }).catch((err) => {
-      console.error("[claude-stream] Start error:", err);
-      if (!res.writableEnded) {
-        sendEvent("error", {
-          type: "server_error",
-          message: err instanceof Error ? err.message : String(err),
-        });
-        res.end();
-      }
-      resolve();
-    });
-  });
+  if (!res.writableEnded) res.end();
 }
 
 async function handleClaudeNonStreamingResponse(
   res: Response,
-  subprocess: CursorSubprocess,
-  prompt: string,
+  client: CursorApiClient,
+  messages: SimpleMessage[],
   model: string,
-  workspace: string | undefined,
   requestId: string
 ): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let finalResult: ResultEvent | null = null;
-
-    subprocess.on("result", (result: ResultEvent) => {
-      finalResult = result;
+  try {
+    const result = await client.chat({ messages, model });
+    res.json(createClaudeResponse(requestId, result.model, result.text));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({
+      type: "error",
+      error: { type: "server_error", message },
     });
-
-    subprocess.on("error", (error: Error) => {
-      console.error("[claude-non-stream] Error:", error.message);
-      if (!res.headersSent) {
-        res.status(500).json({
-          type: "error",
-          error: { type: "server_error", message: error.message },
-        });
-      }
-      resolve();
-    });
-
-    subprocess.on("close", () => {
-      if (finalResult) {
-        const response = createClaudeResponse(
-          requestId,
-          finalResult.model || model,
-          finalResult.text
-        );
-        res.json(response);
-      } else if (!res.headersSent) {
-        res.status(500).json({
-          type: "error",
-          error: {
-            type: "server_error",
-            message: "CLI exited without producing a result",
-          },
-        });
-      }
-      resolve();
-    });
-
-    subprocess.start(prompt, { model, workspace }).catch((error) => {
-      if (!res.headersSent) {
-        res.status(500).json({
-          type: "error",
-          error: {
-            type: "server_error",
-            message: error instanceof Error ? error.message : String(error),
-          },
-        });
-      }
-      resolve();
-    });
-  });
+  }
 }
+
+// ─── Models & Health ───
 
 export function handleModels(_req: Request, res: Response): void {
   const now = Math.floor(Date.now() / 1000);
-
   res.json({
     object: "list",
     data: KNOWN_MODELS.map((id) => ({
@@ -539,17 +373,11 @@ export function handleModels(_req: Request, res: Response): void {
   });
 }
 
-let cachedCliVersion: string | undefined;
-
-export function setCachedCliVersion(version: string): void {
-  cachedCliVersion = version;
-}
-
 export function handleHealth(_req: Request, res: Response): void {
   res.json({
     status: "ok",
     provider: "cursor-agent-api-proxy",
-    cli_version: cachedCliVersion ?? "unknown",
+    mode: cursorClient ? "http-api" : "not-configured",
     timestamp: new Date().toISOString(),
   });
 }

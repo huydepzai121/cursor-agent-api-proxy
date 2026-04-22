@@ -9,7 +9,7 @@
     "cursor-agent-api": "dist/server/standalone.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/upstream/proto-messages.cjs dist/upstream/proto-messages.cjs",
     "dev": "tsc --watch",
     "start": "node dist/server/standalone.js",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -30,6 +30,7 @@
   "license": "MIT",
   "dependencies": {
     "express": "^4.21.2",
+    "protobufjs": "^8.0.1",
     "uuid": "^11.0.5"
   },
   "devDependencies": {

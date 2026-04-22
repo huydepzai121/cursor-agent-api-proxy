@@ -9,7 +9,9 @@ import {
   handleMessages,
   handleModels,
   handleHealth,
+  initCursorClient,
 } from "./routes.js";
+import { CursorApiClient } from "../upstream/cursor-client.js";
 
 let server: Server | null = null;
 
@@ -42,7 +44,18 @@ export async function startServer(
     res.sendStatus(204);
   });
 
-  const proxyKey = process.env.PROXY_API_KEY || process.env.CURSOR_API_KEY;
+  // Initialize Cursor API client (HTTP mode — no CLI needed)
+  const cursorApiKey = process.env.CURSOR_API_KEY;
+  if (cursorApiKey) {
+    const client = new CursorApiClient({ apiKey: cursorApiKey });
+    initCursorClient(client);
+    console.log("Cursor API client initialized (HTTP mode — no CLI needed)");
+  } else {
+    console.warn("CURSOR_API_KEY not set — API calls will fail");
+  }
+
+  // Proxy auth (optional, separate from CURSOR_API_KEY)
+  const proxyKey = process.env.PROXY_API_KEY;
   if (proxyKey) {
     app.use((req, res, next) => {
       if (req.path === "/health" || req.method === "OPTIONS") return next();

@@ -14,8 +14,6 @@
  */
 
 import { startServer, stopServer } from "./index.js";
-import { setCachedCliVersion } from "./routes.js";
-import { verifyCursorCli } from "../subprocess/manager.js";
 import { installService, uninstallService } from "../service/install.js";
 import {
   daemonStart,
@@ -56,21 +54,13 @@ Options:
 }
 
 async function runForeground(port: number): Promise<void> {
-  console.log("Checking Cursor CLI (agent)...");
-  const check = await verifyCursorCli();
-  if (check.ok) {
-    console.log(`  Cursor CLI: ${check.version || "OK"}`);
-    if (check.version) setCachedCliVersion(check.version);
-  } else {
-    console.error(`  ${check.error}`);
-    console.error("\nPlease install and authenticate the Cursor CLI first:");
-    if (process.platform === "win32") {
-      console.error("  irm 'https://cursor.com/install?win32=true' | iex");
-      console.error("  agent login");
-    } else {
-      console.error("  curl https://cursor.com/install -fsS | bash");
-      console.error("  agent login");
-    }
+  // No CLI check needed — we use HTTP API directly
+  if (!process.env.CURSOR_API_KEY) {
+    console.error("CURSOR_API_KEY is required. Set it to your Cursor cookie/token.");
+    console.error("\nTo get your Cursor cookie:");
+    console.error("  1. Open Cursor IDE");
+    console.error("  2. Extract the session token from DevTools");
+    console.error("  3. Set CURSOR_API_KEY=<your-token>");
     process.exit(1);
   }
 
@@ -80,6 +70,7 @@ async function runForeground(port: number): Promise<void> {
     const base = `http://localhost:${port}`;
     console.log(`\n  Base URL : ${base}/v1`);
     console.log(`  Health   : ${base}/health`);
+    console.log(`  Mode     : HTTP API (api2.cursor.sh)`);
     console.log("\n  Press Ctrl+C to stop.\n");
   } catch (err) {
     console.error("Failed to start server:", err);
