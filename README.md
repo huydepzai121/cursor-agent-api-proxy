@@ -144,6 +144,7 @@ cd cursor-agent-api-proxy
 
 ```bash
 cat > .env << 'EOF'
+CURSOR_API_KEY=user
 PROXY_API_KEY=sk-your-secret-key
 EOF
 ```
