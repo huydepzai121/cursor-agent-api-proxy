@@ -5,10 +5,6 @@ services:
       - "${PORT:-4646}:4646"
     environment:
       - PORT=4646
+      - CURSOR_API_KEY=${CURSOR_API_KEY}
       - PROXY_API_KEY=${PROXY_API_KEY:-}
-      - CURSOR_WORKSPACE=${CURSOR_WORKSPACE:-}
-      - CURSOR_DEBUG=${CURSOR_DEBUG:-}
-    volumes:
-      # Mount Cursor CLI credentials from host
-      - ${HOME}/.cursor-cli:/root/.cursor-cli:ro
     restart: unless-stopped
