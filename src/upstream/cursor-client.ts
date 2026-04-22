@@ -184,24 +184,17 @@ export class CursorApiClient {
           return;
         }
 
-        const reader = response.body.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        // Use for-await to iterate the stream (works with both undici and native fetch)
+        for await (const rawChunk of response.body as AsyncIterable<Uint8Array>) {
+          const chunk = Buffer.from(rawChunk);
+          const decoded = decodeCursorChunk(chunk);
 
-            const chunk = Buffer.from(value);
-            const decoded = decodeCursorChunk(chunk);
-
-            if (decoded.thinking) {
-              yield { type: "thinking_delta", text: decoded.thinking };
-            }
-            if (decoded.text) {
-              yield { type: "content_delta", text: decoded.text };
-            }
+          if (decoded.thinking) {
+            yield { type: "thinking_delta", text: decoded.thinking };
           }
-        } finally {
-          reader.releaseLock();
+          if (decoded.text) {
+            yield { type: "content_delta", text: decoded.text };
+          }
         }
 
         yield { type: "done" };
