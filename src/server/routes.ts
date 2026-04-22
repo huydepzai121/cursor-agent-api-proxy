@@ -425,12 +425,21 @@ async function handleClaudeStreamingWithTools(
   const fullParts: string[] = [];
   let error: string | undefined;
 
-  for await (const event of client.chatStream({ messages, model, stream: true })) {
-    if (event.type === "content_delta" && event.text) {
-      fullParts.push(event.text);
-    } else if (event.type === "error") {
-      error = event.error;
+  // Keepalive during buffering to prevent gateway 504s
+  const keepalive = setInterval(() => {
+    if (!res.writableEnded) res.write(": keepalive\n\n");
+  }, 15_000);
+
+  try {
+    for await (const event of client.chatStream({ messages, model, stream: true })) {
+      if (event.type === "content_delta" && event.text) {
+        fullParts.push(event.text);
+      } else if (event.type === "error") {
+        error = event.error;
+      }
     }
+  } finally {
+    clearInterval(keepalive);
   }
 
   if (error && fullParts.length === 0) {
