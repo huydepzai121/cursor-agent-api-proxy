@@ -114,7 +114,7 @@ export class CursorApiClient {
         content: m.content,
         role: (m.role === "user" ? 1 : 2) as 1 | 2,
         messageId: uuidv4(),
-        ...(m.role === "user" ? { chatModeEnum: 1 } : {}),
+        ...(m.role === "user" ? { chatModeEnum: 2 } : {}),
       }));
 
     return { cursorMessages, instruction };

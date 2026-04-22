@@ -65,13 +65,13 @@ export function encodeCursorRequest(body: CursorRequestBody): Buffer {
       messageIds,
       largeContext: 0,
       unknown38: 0,
-      chatModeEnum: 1,
+      chatModeEnum: 2,
       unknown47: "",
       unknown48: 0,
       unknown49: 0,
       unknown51: 0,
       unknown53: 1,
-      chatMode: "Ask",
+      chatMode: "Agent",
     },
   };
 
