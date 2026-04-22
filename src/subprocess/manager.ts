@@ -9,6 +9,7 @@
 
 import { spawn, ChildProcess } from "child_process";
 import { EventEmitter } from "events";
+import { tmpdir } from "os";
 import type { CursorCliMessage } from "../types/cursor-cli.js";
 import {
   isSystemInit,
@@ -57,7 +58,7 @@ export class CursorSubprocess extends EventEmitter {
         }
 
         this.process = spawn("agent", args, {
-          cwd: options.cwd ?? process.cwd(),
+          cwd: options.cwd ?? tmpdir(),
           env,
           stdio: ["pipe", "pipe", "pipe"],
           shell: IS_WIN,

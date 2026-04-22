@@ -13,6 +13,17 @@ import {
   createChatResponse,
 } from "../adapter/cli-to-openai.js";
 import type { OpenAIChatRequest } from "../types/openai.js";
+import { claudeToCli } from "../adapter/claude-to-cli.js";
+import {
+  createClaudeResponse,
+  createClaudeStreamMessageStart,
+  createClaudeStreamContentBlockStart,
+  createClaudeStreamContentBlockDelta,
+  createClaudeStreamContentBlockStop,
+  createClaudeStreamMessageDelta,
+  createClaudeStreamMessageStop,
+} from "../adapter/cli-to-claude.js";
+import type { ClaudeMessagesRequest } from "../types/claude.js";
 
 const KNOWN_MODELS = [
   "auto",
@@ -304,6 +315,202 @@ async function handleNonStreamingResponse(
             message: error instanceof Error ? error.message : String(error),
             type: "server_error",
             code: null,
+          },
+        });
+      }
+      resolve();
+    });
+  });
+}
+
+export async function handleMessages(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const requestId = uuidv4().replace(/-/g, "").slice(0, 24);
+  const body = req.body as ClaudeMessagesRequest;
+  const stream = body.stream === true;
+
+  try {
+    if (
+      !body.messages ||
+      !Array.isArray(body.messages) ||
+      body.messages.length === 0
+    ) {
+      res.status(400).json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "messages is required and must be a non-empty array",
+        },
+      });
+      return;
+    }
+
+    const { prompt, model } = claudeToCli(body);
+    console.error(
+      `[messages] id=${requestId} model=${body.model} -> cli_model=${model} stream=${stream}`
+    );
+
+    const subprocess = new CursorSubprocess();
+
+    if (stream) {
+      await handleClaudeStreamingResponse(res, subprocess, prompt, model, requestId);
+    } else {
+      await handleClaudeNonStreamingResponse(res, subprocess, prompt, model, requestId);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[messages] Error:", message);
+    if (!res.headersSent) {
+      res.status(500).json({
+        type: "error",
+        error: { type: "server_error", message },
+      });
+    }
+  }
+}
+
+async function handleClaudeStreamingResponse(
+  res: Response,
+  subprocess: CursorSubprocess,
+  prompt: string,
+  model: string,
+  requestId: string
+): Promise<void> {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Request-Id", requestId);
+  res.flushHeaders();
+
+  function sendEvent(type: string, data: unknown): void {
+    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  sendEvent("message_start", createClaudeStreamMessageStart(requestId, model));
+  sendEvent("content_block_start", createClaudeStreamContentBlockStart());
+  res.write("event: ping\ndata: {}\n\n");
+
+  return new Promise<void>((resolve) => {
+    let isComplete = false;
+    let outputTokens = 0;
+
+    res.on("close", () => {
+      if (!isComplete) subprocess.kill();
+      resolve();
+    });
+
+    subprocess.on("content_delta", (delta: ContentDeltaEvent) => {
+      if (delta.text && !res.writableEnded) {
+        sendEvent("content_block_delta", createClaudeStreamContentBlockDelta(delta.text));
+      }
+    });
+
+    subprocess.on("result", (result: ResultEvent) => {
+      isComplete = true;
+      if (!res.writableEnded) {
+        sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
+        sendEvent("message_delta", createClaudeStreamMessageDelta(outputTokens));
+        sendEvent("message_stop", createClaudeStreamMessageStop());
+        res.end();
+      }
+      resolve();
+    });
+
+    subprocess.on("error", (error: Error) => {
+      console.error("[claude-stream] Error:", error.message);
+      if (!res.writableEnded) {
+        sendEvent("error", { type: "server_error", message: error.message });
+        res.end();
+      }
+      resolve();
+    });
+
+    subprocess.on("close", (code: number | null) => {
+      if (!res.writableEnded) {
+        if (code !== 0 && !isComplete) {
+          sendEvent("error", {
+            type: "server_error",
+            message: `Process exited with code ${code}`,
+          });
+        }
+        if (!isComplete) {
+          sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
+          sendEvent("message_delta", createClaudeStreamMessageDelta(outputTokens));
+          sendEvent("message_stop", createClaudeStreamMessageStop());
+        }
+        res.end();
+      }
+      resolve();
+    });
+
+    subprocess.start(prompt, { model }).catch((err) => {
+      console.error("[claude-stream] Start error:", err);
+      if (!res.writableEnded) {
+        sendEvent("error", {
+          type: "server_error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+        res.end();
+      }
+      resolve();
+    });
+  });
+}
+
+async function handleClaudeNonStreamingResponse(
+  res: Response,
+  subprocess: CursorSubprocess,
+  prompt: string,
+  model: string,
+  requestId: string
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let finalResult: ResultEvent | null = null;
+
+    subprocess.on("result", (result: ResultEvent) => {
+      finalResult = result;
+    });
+
+    subprocess.on("error", (error: Error) => {
+      console.error("[claude-non-stream] Error:", error.message);
+      if (!res.headersSent) {
+        res.status(500).json({
+          type: "error",
+          error: { type: "server_error", message: error.message },
+        });
+      }
+      resolve();
+    });
+
+    subprocess.on("close", () => {
+      if (finalResult) {
+        const response = createClaudeResponse(
+          requestId,
+          finalResult.model || model,
+          finalResult.text
+        );
+        res.json(response);
+      } else if (!res.headersSent) {
+        res.status(500).json({
+          type: "error",
+          error: {
+            type: "server_error",
+            message: "CLI exited without producing a result",
+          },
+        });
+      }
+      resolve();
+    });
+
+    subprocess.start(prompt, { model }).catch((error) => {
+      if (!res.headersSent) {
+        res.status(500).json({
+          type: "error",
+          error: {
+            type: "server_error",
+            message: error instanceof Error ? error.message : String(error),
           },
         });
       }

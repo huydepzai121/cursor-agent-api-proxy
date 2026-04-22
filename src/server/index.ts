@@ -6,6 +6,7 @@ import express from "express";
 import type { Server } from "http";
 import {
   handleChatCompletions,
+  handleMessages,
   handleModels,
   handleHealth,
 } from "./routes.js";
@@ -32,7 +33,7 @@ export async function startServer(
     );
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization"
+      "Content-Type, Authorization, x-api-key, anthropic-version"
     );
     next();
   });
@@ -46,7 +47,8 @@ export async function startServer(
     app.use((req, res, next) => {
       if (req.path === "/health" || req.method === "OPTIONS") return next();
       const auth = req.headers.authorization;
-      const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+      const xApiKey = req.headers["x-api-key"] as string | undefined;
+      const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : (xApiKey?.trim() ?? "");
       if (token !== proxyKey) {
         res.status(401).json({
           error: { message: "Invalid API key", type: "auth_error", code: "invalid_api_key" },
@@ -60,6 +62,7 @@ export async function startServer(
   app.get("/health", handleHealth);
   app.get("/v1/models", handleModels);
   app.post("/v1/chat/completions", handleChatCompletions);
+  app.post("/v1/messages", handleMessages);
 
   app.use((_req, res) => {
     res.status(404).json({

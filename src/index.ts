@@ -14,3 +14,14 @@ export {
   createDoneChunk,
   createChatResponse,
 } from "./adapter/cli-to-openai.js";
+
+export { claudeToCli } from "./adapter/claude-to-cli.js";
+export {
+  createClaudeResponse,
+  createClaudeStreamMessageStart,
+  createClaudeStreamContentBlockStart,
+  createClaudeStreamContentBlockDelta,
+  createClaudeStreamContentBlockStop,
+  createClaudeStreamMessageDelta,
+  createClaudeStreamMessageStop,
+} from "./adapter/cli-to-claude.js";
