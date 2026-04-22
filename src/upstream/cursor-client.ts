@@ -22,7 +22,7 @@ import {
 
 const CURSOR_API_BASE = "https://api2.cursor.sh";
 const DEFAULT_CLIENT_VERSION = "3.1.17";
-const DEFAULT_MODEL = "claude-4-sonnet";
+const DEFAULT_MODEL = "default";
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
 
