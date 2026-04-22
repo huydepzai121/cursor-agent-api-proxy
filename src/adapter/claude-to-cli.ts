@@ -3,7 +3,7 @@
  * suitable for the Cursor CLI `agent -p` command.
  */
 
-import type { ClaudeContentBlock, ClaudeMessage, ClaudeMessagesRequest } from "../types/claude.js";
+import type { ClaudeContentBlock, ClaudeMessage, ClaudeMessagesRequest, ClaudeTextBlock } from "../types/claude.js";
 import { extractModel } from "./openai-to-cli.js";
 
 export interface CliInput {
@@ -14,7 +14,7 @@ export interface CliInput {
 function contentToText(content: string | ClaudeContentBlock[]): string {
   if (typeof content === "string") return content;
   return content
-    .filter((b): b is ClaudeContentBlock => b.type === "text")
+    .filter((b): b is ClaudeTextBlock => b.type === "text")
     .map((b) => b.text)
     .join("");
 }

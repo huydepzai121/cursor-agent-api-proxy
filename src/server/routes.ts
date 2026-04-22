@@ -9,7 +9,7 @@
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { CursorApiClient, type ChatStreamEvent } from "../upstream/cursor-client.js";
-import { openaiToCli, extractModel } from "../adapter/openai-to-cli.js";
+import { extractModel } from "../adapter/openai-to-cli.js";
 import {
   createStreamChunk,
   createDoneChunk,
@@ -19,13 +19,20 @@ import type { OpenAIChatRequest } from "../types/openai.js";
 import {
   createClaudeResponse,
   createClaudeStreamMessageStart,
+  createClaudeStreamTextBlockStart,
+  createClaudeStreamToolUseBlockStart,
+  createClaudeStreamTextDelta,
+  createClaudeStreamInputJsonDelta,
+  createClaudeStreamBlockStop,
+  createClaudeStreamMessageDelta,
+  createClaudeStreamMessageStop,
   createClaudeStreamContentBlockStart,
   createClaudeStreamContentBlockDelta,
   createClaudeStreamContentBlockStop,
-  createClaudeStreamMessageDelta,
-  createClaudeStreamMessageStop,
 } from "../adapter/cli-to-claude.js";
 import type { ClaudeMessagesRequest } from "../types/claude.js";
+import { convertMessagesWithTools } from "../upstream/tool-injection.js";
+import { parseToolCalls } from "../upstream/tool-parser.js";
 
 const KNOWN_MODELS = [
   "default",
@@ -255,6 +262,7 @@ export async function handleMessages(
   const requestId = uuidv4().replace(/-/g, "").slice(0, 24);
   const body = req.body as ClaudeMessagesRequest;
   const stream = body.stream === true;
+  const hasTools = body.tools && body.tools.length > 0;
 
   try {
     if (!body.messages?.length) {
@@ -266,29 +274,50 @@ export async function handleMessages(
     }
 
     const model = extractModel(body.model || "default");
-    console.error(`[messages] id=${requestId} model=${body.model} -> ${model} stream=${stream}`);
+    console.error(`[messages] id=${requestId} model=${body.model} -> ${model} stream=${stream} tools=${hasTools ? body.tools!.length : 0}`);
 
     const client = getClient();
 
-    // Convert Claude messages to simple format
-    const chatMessages: SimpleMessage[] = [];
-    if (body.system) {
-      const sysText = typeof body.system === "string"
-        ? body.system
-        : body.system.filter((b) => b.type === "text").map((b) => b.text).join("");
-      if (sysText) chatMessages.push({ role: "system", content: sysText });
-    }
-    for (const msg of body.messages) {
-      const text = typeof msg.content === "string"
-        ? msg.content
-        : msg.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-      if (text) chatMessages.push({ role: msg.role, content: text });
+    // Build messages — with or without tool injection
+    let chatMessages: SimpleMessage[];
+
+    if (hasTools) {
+      // Extract system text
+      let sysText = "";
+      if (body.system) {
+        sysText = typeof body.system === "string"
+          ? body.system
+          : body.system.filter((b) => b.type === "text").map((b) => b.text).join("");
+      }
+      chatMessages = convertMessagesWithTools(body.messages, sysText, body.tools!, body.tool_choice);
+    } else {
+      chatMessages = [];
+      if (body.system) {
+        const sysText = typeof body.system === "string"
+          ? body.system
+          : body.system.filter((b) => b.type === "text").map((b) => b.text).join("");
+        if (sysText) chatMessages.push({ role: "system", content: sysText });
+      }
+      for (const msg of body.messages) {
+        const text = typeof msg.content === "string"
+          ? msg.content
+          : msg.content.filter((b) => b.type === "text").map((b) => (b as any).text || "").join("");
+        if (text) chatMessages.push({ role: msg.role, content: text });
+      }
     }
 
     if (stream) {
-      await handleClaudeStreamingResponse(res, client, chatMessages, model, requestId);
+      if (hasTools) {
+        await handleClaudeStreamingWithTools(res, client, chatMessages, model, requestId);
+      } else {
+        await handleClaudeStreamingResponse(res, client, chatMessages, model, requestId);
+      }
     } else {
-      await handleClaudeNonStreamingResponse(res, client, chatMessages, model, requestId);
+      if (hasTools) {
+        await handleClaudeNonStreamWithTools(res, client, chatMessages, model, requestId);
+      } else {
+        await handleClaudeNonStreamingResponse(res, client, chatMessages, model, requestId);
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -317,7 +346,7 @@ async function handleClaudeStreamingResponse(
   }
 
   sendEvent("message_start", createClaudeStreamMessageStart(requestId, model));
-  sendEvent("content_block_start", createClaudeStreamContentBlockStart());
+  sendEvent("content_block_start", createClaudeStreamTextBlockStart(0));
   res.write("event: ping\ndata: {}\n\n");
 
   let hasContent = false;
@@ -326,17 +355,17 @@ async function handleClaudeStreamingResponse(
     if (res.writableEnded) break;
 
     if (event.type === "content_delta" && event.text) {
-      sendEvent("content_block_delta", createClaudeStreamContentBlockDelta(event.text));
+      sendEvent("content_block_delta", createClaudeStreamTextDelta(0, event.text));
       hasContent = true;
     } else if (event.type === "done") {
-      sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
-      sendEvent("message_delta", createClaudeStreamMessageDelta(0));
+      sendEvent("content_block_stop", createClaudeStreamBlockStop(0));
+      sendEvent("message_delta", createClaudeStreamMessageDelta());
       sendEvent("message_stop", createClaudeStreamMessageStop());
     } else if (event.type === "error") {
       sendEvent("error", { type: "server_error", message: event.error });
       if (!hasContent) {
-        sendEvent("content_block_stop", createClaudeStreamContentBlockStop());
-        sendEvent("message_delta", createClaudeStreamMessageDelta(0));
+        sendEvent("content_block_stop", createClaudeStreamBlockStop(0));
+        sendEvent("message_delta", createClaudeStreamMessageDelta());
         sendEvent("message_stop", createClaudeStreamMessageStop());
       }
     }
@@ -355,6 +384,125 @@ async function handleClaudeNonStreamingResponse(
   try {
     const result = await client.chat({ messages, model });
     res.json(createClaudeResponse(requestId, result.model, result.text));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({
+      type: "error",
+      error: { type: "server_error", message },
+    });
+  }
+}
+
+// ─── Tool-aware handlers ───
+
+/**
+ * Streaming handler with tool_use support.
+ * Buffers the full response, parses tool calls, then emits proper SSE events.
+ */
+async function handleClaudeStreamingWithTools(
+  res: Response,
+  client: CursorApiClient,
+  messages: SimpleMessage[],
+  model: string,
+  requestId: string
+): Promise<void> {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Request-Id", requestId);
+  res.flushHeaders();
+
+  function sendEvent(type: string, data: unknown): void {
+    if (!res.writableEnded) {
+      res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+  }
+
+  sendEvent("message_start", createClaudeStreamMessageStart(requestId, model));
+  res.write("event: ping\ndata: {}\n\n");
+
+  // Buffer full response to parse tool calls
+  const fullParts: string[] = [];
+  let error: string | undefined;
+
+  for await (const event of client.chatStream({ messages, model, stream: true })) {
+    if (event.type === "content_delta" && event.text) {
+      fullParts.push(event.text);
+    } else if (event.type === "error") {
+      error = event.error;
+    }
+  }
+
+  if (error && fullParts.length === 0) {
+    sendEvent("error", { type: "server_error", message: error });
+    sendEvent("message_stop", createClaudeStreamMessageStop());
+    if (!res.writableEnded) res.end();
+    return;
+  }
+
+  const fullText = fullParts.join("");
+  const { toolCalls, cleanText } = parseToolCalls(fullText);
+
+  let blockIndex = 0;
+
+  // Emit text block if there's clean text
+  if (cleanText) {
+    sendEvent("content_block_start", createClaudeStreamTextBlockStart(blockIndex));
+    // Send text in chunks for streaming feel
+    const CHUNK_SIZE = 64;
+    for (let i = 0; i < cleanText.length; i += CHUNK_SIZE) {
+      const chunk = cleanText.slice(i, i + CHUNK_SIZE);
+      sendEvent("content_block_delta", createClaudeStreamTextDelta(blockIndex, chunk));
+    }
+    sendEvent("content_block_stop", createClaudeStreamBlockStop(blockIndex));
+    blockIndex++;
+  }
+
+  // Emit tool_use blocks
+  for (const tc of toolCalls) {
+    const toolId = `toolu_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    sendEvent("content_block_start", createClaudeStreamToolUseBlockStart(blockIndex, toolId, tc.name));
+
+    // Send input as JSON delta chunks
+    const inputJson = JSON.stringify(tc.arguments);
+    const INPUT_CHUNK = 128;
+    for (let i = 0; i < inputJson.length; i += INPUT_CHUNK) {
+      const chunk = inputJson.slice(i, i + INPUT_CHUNK);
+      sendEvent("content_block_delta", createClaudeStreamInputJsonDelta(blockIndex, chunk));
+    }
+
+    sendEvent("content_block_stop", createClaudeStreamBlockStop(blockIndex));
+    blockIndex++;
+  }
+
+  // If no blocks at all, emit empty text block
+  if (blockIndex === 0) {
+    sendEvent("content_block_start", createClaudeStreamTextBlockStart(0));
+    sendEvent("content_block_stop", createClaudeStreamBlockStop(0));
+    blockIndex = 1;
+  }
+
+  const stopReason = toolCalls.length > 0 ? "tool_use" as const : "end_turn" as const;
+  sendEvent("message_delta", createClaudeStreamMessageDelta(stopReason));
+  sendEvent("message_stop", createClaudeStreamMessageStop());
+
+  if (!res.writableEnded) res.end();
+}
+
+/**
+ * Non-streaming handler with tool_use support.
+ */
+async function handleClaudeNonStreamWithTools(
+  res: Response,
+  client: CursorApiClient,
+  messages: SimpleMessage[],
+  model: string,
+  requestId: string
+): Promise<void> {
+  try {
+    const result = await client.chat({ messages, model });
+    const { toolCalls, cleanText } = parseToolCalls(result.text);
+    res.json(createClaudeResponse(requestId, result.model, cleanText, toolCalls));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({
