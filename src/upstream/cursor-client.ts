@@ -22,6 +22,7 @@ import {
 
 const CURSOR_API_BASE = "https://api2.cursor.sh";
 const DEFAULT_CLIENT_VERSION = "3.1.17";
+const DEFAULT_MODEL = "claude-4-sonnet";
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
 
@@ -132,7 +133,7 @@ export class CursorApiClient {
 
     const body = encodeCursorRequest({
       messages: cursorMessages,
-      model: request.model,
+      model: request.model === "auto" ? DEFAULT_MODEL : request.model,
       instruction,
       conversationId: uuidv4(),
     });
