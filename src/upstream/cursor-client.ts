@@ -9,6 +9,7 @@
  */
 
 import { v4 as uuidv4, v5 as uuidv5 } from "uuid";
+import { fetch as undiciFetch, Agent } from "undici";
 import {
   encodeCursorRequest,
   decodeCursorChunk,
@@ -23,6 +24,9 @@ const CURSOR_API_BASE = "https://api2.cursor.sh";
 const DEFAULT_CLIENT_VERSION = "3.1.17";
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
+
+// HTTP/2 dispatcher — required by Cursor API
+const h2Dispatcher = new Agent({ allowH2: true });
 
 export interface CursorClientConfig {
   /** Cursor cookie / API key (Bearer token) */
@@ -140,13 +144,14 @@ export class CursorApiClient {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeout);
 
-        const response = await fetch(
+        const response = await undiciFetch(
           `${CURSOR_API_BASE}/aiserver.v1.ChatService/StreamUnifiedChatWithTools`,
           {
             method: "POST",
             headers,
             body,
             signal: controller.signal,
+            dispatcher: h2Dispatcher,
           }
         );
 
